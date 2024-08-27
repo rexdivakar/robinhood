@@ -1,7 +1,9 @@
+import numpy as np
 import pandas as pd
 import yfinance as yf
 import streamlit as st
 import plotly.graph_objs as go
+from scipy.optimize import newton
 from plotly.subplots import make_subplots
 
 
@@ -16,11 +18,21 @@ def fetch_stock_data(ticker_symbol, period="1mo"):
     return hist
 
 
+def xirr(cash_flows, dates):
+    """Calculate the Extended Internal Rate of Return (XIRR)."""
+
+    def xirr_func(rate):
+        return np.sum(cash_flows / (1 + rate) ** ((dates - dates[0]).days / 365.0))
+
+    return newton(xirr_func, 0.1)
+
+
 # Set page configuration to widescreen mode
 st.set_page_config(layout="wide")
 
 # File uploader for CSV file
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
+# uploaded_file = "./robinhood_statement.csv"
 
 if uploaded_file is not None:
     try:
@@ -31,21 +43,28 @@ if uploaded_file is not None:
         df_buy = df[df["Trans Code"] == "Buy"].copy()
 
         # Convert relevant columns to numeric and date formats
-        df_buy["Activity Date"] = pd.to_datetime(df_buy["Activity Date"]).dt.date
-        df_buy["Quantity"] = pd.to_numeric(df_buy["Quantity"], errors="coerce")
-        df_buy["Price"] = df_buy["Price"].replace("[\$,]", "", regex=True).astype(float)
+        df_buy.loc[:, "Activity Date"] = pd.to_datetime(df_buy["Activity Date"]).dt.date
+        df_buy.loc[:, "Quantity"] = pd.to_numeric(df_buy["Quantity"], errors="coerce")
+        df_buy.loc[:, "Price"] = (
+            df_buy["Price"].replace("[\\$,]", "", regex=True).astype(float)
+        )
 
         # Sort by Activity Date
         df_buy = df_buy.sort_values(by="Activity Date")
 
         # Calculate cumulative quantity over time
-        df_buy["Cumulative Quantity"] = df_buy.groupby("Instrument")["Quantity"].cumsum()
+        df_buy["Cumulative Quantity"] = df_buy.groupby("Instrument")[
+            "Quantity"
+        ].cumsum()
         df_buy["Weighted Average Price"] = (
             df_buy.groupby("Instrument")
-            .apply(lambda x: (x["Price"] * x["Quantity"]).cumsum() / x["Cumulative Quantity"])
+            .apply(
+                lambda x: (x["Price"] * x["Quantity"]).cumsum()
+                / x["Cumulative Quantity"]
+            )
             .reset_index(drop=True)
         )
-        
+
         st.success("CSV file loaded successfully!")
     except Exception as e:
         st.error(f"Error loading CSV file: {e}")
@@ -55,6 +74,7 @@ else:
     df_buy = pd.DataFrame()  # Empty DataFrame if no file is uploaded
 
 st.title("Interactive Stock Analysis")
+
 
 def display_chart():
     if df_buy.empty:
@@ -70,18 +90,11 @@ def display_chart():
         index=stock_list.tolist().index(default_stock),
     )
 
-    # Drop down to select the period
-    period = st.selectbox(
-        "Select the period",
-        ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"],
-        index=0,
-    )
-
     # Get stock data
     stock_info = get_stock_info(selected_stock)
 
     # Fetch historical data
-    hist_data = fetch_stock_data(selected_stock, period=period)
+    hist_data = fetch_stock_data(selected_stock, period="1mo")
 
     # Calculate trend
     current_price = hist_data["Close"][-1]
@@ -89,53 +102,10 @@ def display_chart():
     trend = "Increasing" if current_price > past_prices.mean() else "Decreasing"
     trend_color = "green" if trend == "Increasing" else "red"
 
-    # Display trend
-    st.markdown(
-        f"<h2 style='color: {trend_color};'>Trend for {stock_info.get('longName')} is : {trend}</h2>",
-        unsafe_allow_html=True,
-    )
-
-    # Display stock info
-    st.subheader(f"Stock Info: {stock_info.get('longName', 'N/A')}")
-
-    # Create columns
-    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-
-    # Display stock info in columns
-    with col1:
-        st.metric(label="Current Price", value=f"${current_price:.2f}")
-
-    with col2:
-        st.metric(label="Day High", value=f"${stock_info.get('dayHigh', 'N/A'):.2f}")
-
-    with col3:
-        st.metric(label="Day Low", value=f"${stock_info.get('dayLow', 'N/A'):.2f}")
-
-    with col4:
-        st.metric(
-            label="Regular Market Open",
-            value=f"${stock_info.get('regularMarketOpen', 'N/A'):.2f}",
-        )
-
-    with col5:
-        st.metric(
-            label="52-Week High",
-            value=f"${stock_info.get('fiftyTwoWeekHigh', 'N/A'):.2f}",
-        )
-
-    with col6:
-        st.metric(
-            label="52-Week Low",
-            value=f"${stock_info.get('fiftyTwoWeekLow', 'N/A'):.2f}",
-        )
-
-    with col7:
-        st.metric(label="PE", value=f"{stock_info.get('trailingPE', 'N/A'):.2f}")
-
     # Filter data for the selected stock
     stock_data = df_buy[df_buy["Instrument"] == selected_stock]
     stock_data["Invested_Amount"] = (
-        df_buy["Amount"].replace("[\$,()]", "", regex=True).astype(float).round(2)
+        df_buy["Amount"].replace("[\\$,()]", "", regex=True).astype(float).round(2)
     )
 
     if not stock_data.empty:
@@ -197,13 +167,68 @@ def display_chart():
         # Render the plot in Streamlit
         st.plotly_chart(fig)
 
-        # Show the raw data in a table
-        st.subheader(f"Raw Data for {selected_stock}")
-        st.write(
-            stock_data[
-                ["Activity Date", "Quantity", "Invested_Amount", "Price", "Description"]
-            ].reset_index(drop=True)
+        # # Show the raw data in a table
+        # st.subheader(f"Raw Data for {selected_stock}")
+        # st.write(
+        #     stock_data[
+        #         ["Activity Date", "Quantity", "Invested_Amount", "Price", "Description"]
+        #     ].reset_index(drop=True)
+        # )
+
+        # Display stock info
+        st.subheader(f"Stock Info: {stock_info.get('longName', 'N/A')}")
+
+        # Display trend
+        st.markdown(
+            f"<h2 style='color: {trend_color};'>Trend for {stock_info.get('longName')} is : {trend}</h2>",
+            unsafe_allow_html=True,
         )
+
+        # Create columns
+        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+
+        # Display stock info in columns
+        with col1:
+            st.metric(label="Current Price", value=f"${current_price:.2f}")
+
+        with col2:
+            st.metric(
+                label="Day High", value=f"${stock_info.get('dayHigh', 'N/A'):.2f}"
+            )
+
+        with col3:
+            st.metric(label="Day Low", value=f"${stock_info.get('dayLow', 'N/A'):.2f}")
+
+        with col4:
+            st.metric(
+                label="Regular Market Open",
+                value=f"${stock_info.get('regularMarketOpen', 'N/A'):.2f}",
+            )
+
+        with col5:
+            st.metric(
+                label="52-Week High",
+                value=f"${stock_info.get('fiftyTwoWeekHigh', 'N/A'):.2f}",
+            )
+
+        with col6:
+            st.metric(
+                label="52-Week Low",
+                value=f"${stock_info.get('fiftyTwoWeekLow', 'N/A'):.2f}",
+            )
+
+        with col7:
+            st.metric(label="PE", value=f"{stock_info.get('trailingPE', 'N/A'):.2f}")
+
+        # Drop down to select the period
+        period = st.selectbox(
+            "Select the period",
+            ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
+            index=0,
+        )
+
+        # Fetch historical data
+        hist_data = fetch_stock_data(selected_stock, period=period)
 
         # Plot historical data
         fig = go.Figure()
@@ -232,6 +257,7 @@ def display_chart():
 
     else:
         st.write("No data available for the selected stock.")
+
 
 # Display the chart
 display_chart()
