@@ -4,3 +4,4 @@ plotly==5.23.0
 scipy==1.14.1
 streamlit==1.37.1
 yfinance==0.2.41
+watchdog==5.0.0
