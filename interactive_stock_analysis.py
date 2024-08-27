@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import streamlit as st
+import plotly.express as px
 import plotly.graph_objs as go
 from scipy.optimize import newton
 from datetime import datetime
@@ -292,6 +293,53 @@ def display_chart():
 
     else:
         st.write("No data available for the selected stock.")
+
+
+def display_pie_chart():
+
+    # Calculate the total investment per stock
+    df_buy["Invested_Amount"] = (
+        df_buy["Amount"].replace("[\\$,()]", "", regex=True).astype(float).round(2)
+    )
+    investment_summary = df_buy.groupby("Instrument")["Invested_Amount"].sum()
+
+    # Calculate the percentage of total investment
+    total_investment = investment_summary.sum()
+    investment_summary_percentage = (investment_summary / total_investment) * 100
+
+    # Create a pie chart
+    fig = go.Figure(
+        data=[
+            go.Pie(
+                labels=investment_summary_percentage.index,
+                values=investment_summary_percentage,
+                hoverinfo="label+percent",
+                textinfo="label+value",
+                marker=dict(colors=px.colors.qualitative.Plotly),
+            )
+        ]
+    )
+
+    # Update the layout
+    fig.update_layout(
+        title_text="Investment Distribution by Stock",
+        annotations=[
+            dict(
+                text=f"Total Investment:<br>${total_investment:.2f}",
+                x=0.5,
+                y=0.5,
+                font_size=20,
+                showarrow=False,
+            )
+        ],
+    )
+
+    # Render the pie chart in Streamlit
+    st.plotly_chart(fig)
+
+
+# Display the pie chart
+display_pie_chart()
 
 
 # Display the chart
