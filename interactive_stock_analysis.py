@@ -4,6 +4,7 @@ import yfinance as yf
 import streamlit as st
 import plotly.graph_objs as go
 from scipy.optimize import newton
+from datetime import datetime
 from plotly.subplots import make_subplots
 
 
@@ -32,6 +33,15 @@ st.set_page_config(layout="wide")
 
 # File uploader for CSV file
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
+
+# Write the file to local with the name "robinhood_statement.csv" and append the timestap to the file name
+timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+file_name = f"./robinhood_statement_{timestamp}.csv"
+if uploaded_file is not None:
+    with open(file_name, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    uploaded_file = file_name
+
 # uploaded_file = "./robinhood_statement.csv"
 
 if uploaded_file is not None:
