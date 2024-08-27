@@ -87,8 +87,7 @@ else:
     st.warning("Please upload a CSV file.")
     df_buy = pd.DataFrame()  # Empty DataFrame if no file is uploaded
 
-st.title("Interactive Stock Analysis")
-
+st.title("Robinhood Stock Analysis")
 
 def display_chart():
     if df_buy.empty:
@@ -312,7 +311,7 @@ def display_pie_chart():
         data=[
             go.Pie(
                 labels=investment_summary_percentage.index,
-                values=investment_summary_percentage,
+                values=investment_summary_percentage.round(2),
                 hoverinfo="label+percent",
                 textinfo="label+value",
                 marker=dict(colors=px.colors.qualitative.Plotly),
@@ -323,16 +322,10 @@ def display_pie_chart():
     # Update the layout
     fig.update_layout(
         title_text="Investment Distribution by Stock",
-        annotations=[
-            dict(
-                text=f"Total Investment:<br>${total_investment:.2f}",
-                x=0.5,
-                y=0.5,
-                font_size=20,
-                showarrow=False,
-            )
-        ],
     )
+
+    # Display the total investment outside of the pie chart
+    st.markdown(f"Total Investment: ${total_investment:.2f}")
 
     # Render the pie chart in Streamlit
     st.plotly_chart(fig)
