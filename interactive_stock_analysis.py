@@ -19,30 +19,33 @@ def fetch_stock_data(ticker_symbol, period="1mo"):
     return hist
 
 
-def xirr(cash_flows, dates):
-    """Calculate the Extended Internal Rate of Return (XIRR)."""
+def calculate_xirr(cash_flows):
+    def npv(rate, cash_flows):
+        return sum(
+            [
+                cf / ((1 + rate) ** ((d - cash_flows[0][0]).days / 365.0))
+                for d, cf in cash_flows
+            ]
+        )
 
-    def xirr_func(rate):
-        return np.sum(cash_flows / (1 + rate) ** ((dates - dates[0]).days / 365.0))
-
-    return newton(xirr_func, 0.1)
+    return newton(lambda r: npv(r, cash_flows), 0.1)
 
 
 # Set page configuration to widescreen mode
 st.set_page_config(layout="wide")
 
-# File uploader for CSV file
-uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
-
-# Write the file to local with the name "robinhood_statement.csv" and append the timestap to the file name
 timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 file_name = f"./robinhood_statement_{timestamp}.csv"
+
+# File uploader for CSV file
+uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 if uploaded_file is not None:
     with open(file_name, "wb") as f:
         f.write(uploaded_file.getbuffer())
     uploaded_file = file_name
 
-# uploaded_file = "./robinhood_statement.csv"
+
+uploaded_file = "./robinhood_statement.csv"
 
 if uploaded_file is not None:
     try:
@@ -193,6 +196,28 @@ def display_chart():
             f"<h2 style='color: {trend_color};'>Trend for {stock_info.get('longName')} is : {trend}</h2>",
             unsafe_allow_html=True,
         )
+
+        # Calculate total returns using XIRR
+        cash_flows = list(
+            zip(stock_data["Activity Date"], -stock_data["Invested_Amount"])
+        )
+        cash_flows.append(
+            (
+                datetime.now().date(),
+                current_price * stock_data["Cumulative Quantity"].iloc[-1],
+            )
+        )
+        xirr = calculate_xirr(cash_flows)
+        total_returns = cash_flows[-1][1] + sum(cf[1] for cf in cash_flows[:-1])
+        
+        mcol1, mcol2 = st.columns(2)
+
+        # Display XIRR and total returns
+        with mcol1:
+            st.metric(label="XIRR (Annualized Return)", value=f"{xirr * 100:.2f}%")
+        
+        with mcol2:
+            st.metric(label="Total Return", value=f"${total_returns:.2f}")
 
         # Create columns
         col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
