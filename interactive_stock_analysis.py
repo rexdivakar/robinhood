@@ -1,339 +1,455 @@
-import numpy as np
+import dash
 import pandas as pd
-import yfinance as yf
-import streamlit as st
+from dash import dcc, html
+from dash import dash_table
 import plotly.express as px
-import plotly.graph_objs as go
-from scipy.optimize import newton
-from datetime import datetime
-from plotly.subplots import make_subplots
+from pydantic import BaseModel
+import dash_bootstrap_components as dbc
 
 
-def get_stock_info(ticker_symbol):
-    stock = yf.Ticker(ticker_symbol)
-    return stock.info
+class InvestmentData(BaseModel):
+    Instrument: str
+    Net_Quantity: float
+    Average_Price: float
+    Total_Invested: float
+    Total_Dividends: float
 
 
-def fetch_stock_data(ticker_symbol, period="1mo"):
-    stock = yf.Ticker(ticker_symbol)
-    hist = stock.history(period=period)
-    return hist
+# Function to process data
+def process_data():
+    # Load the data (update the path to your actual file path)
+    df = pd.read_csv("robinhood_statement.csv", encoding="utf-8", on_bad_lines="skip")
+
+    # Filter the transactions for buys, sells, and dividends
+    transactions = df[df["Trans Code"].isin(["Buy", "Sell", "CDIV"])].copy()
+
+    # Clean and convert relevant columns to numeric
+    transactions["Price"] = (
+        transactions["Price"].replace(r"[\$,]", "", regex=True).astype(float)
+    )
+    transactions["Amount"] = (
+        transactions["Amount"].replace(r"[\$,()]", "", regex=True).astype(float)
+    )
+    transactions["Quantity"] = pd.to_numeric(transactions["Quantity"], errors="coerce")
+
+    # Separate the transactions
+    buy_transactions = transactions[transactions["Trans Code"] == "Buy"]
+    sell_transactions = transactions[transactions["Trans Code"] == "Sell"]
+    dividend_transactions = transactions[transactions["Trans Code"] == "CDIV"]
+
+    # Calculate total cost for each buy transaction
+    buy_transactions = buy_transactions.copy()  # Avoid SettingWithCopyWarning
+    buy_transactions["Total_Cost"] = (
+        buy_transactions["Price"] * buy_transactions["Quantity"]
+    )
+
+    # Aggregate buy, sell, and dividend data by instrument
+    buy_summary = (
+        buy_transactions.groupby("Instrument")
+        .agg({"Quantity": "sum", "Total_Cost": "sum"})
+        .reset_index()
+    )
+    sell_summary = (
+        sell_transactions.groupby("Instrument")["Quantity"].sum().reset_index()
+    )
+    dividend_summary = (
+        dividend_transactions.groupby("Instrument")["Amount"].sum().reset_index()
+    )
+
+    # Merge the buy and sell data
+    shares_summary = pd.merge(
+        buy_summary,
+        sell_summary,
+        on="Instrument",
+        how="left",
+        suffixes=("_buy", "_sell"),
+    )
+    shares_summary["Quantity_sell"] = shares_summary["Quantity_sell"].fillna(0)
+
+    # Calculate net quantity
+    shares_summary["Net_Quantity"] = (
+        shares_summary["Quantity_buy"] - shares_summary["Quantity_sell"]
+    )
+
+    # Recalculate the total cost for the net quantity
+    shares_summary["Adjusted_Cost"] = shares_summary["Total_Cost"] * (
+        shares_summary["Net_Quantity"] / shares_summary["Quantity_buy"]
+    )
+
+    # Calculate the average price based on the adjusted cost and net quantity
+    shares_summary["Average_Price"] = (
+        shares_summary["Adjusted_Cost"] / shares_summary["Net_Quantity"]
+    ).round(2)
+
+    # Add the total invested column based on the adjusted cost
+    shares_summary["Total_Invested"] = shares_summary["Adjusted_Cost"].round(2)
+
+    # Filter out instruments where no shares are currently held
+    final_shares = shares_summary[shares_summary["Net_Quantity"] > 0][
+        ["Instrument", "Net_Quantity", "Average_Price", "Total_Invested"]
+    ]
+
+    # Merge dividend data
+    final_summary = pd.merge(
+        final_shares, dividend_summary, on="Instrument", how="left"
+    )
+    final_summary["Total_Dividends"] = final_summary["Amount"].fillna(0)
+    final_summary.drop(columns="Amount", inplace=True)
+
+    # Round the final values for clarity
+    final_summary["Net_Quantity"] = final_summary["Net_Quantity"].round(3)
+    final_summary["Total_Dividends"] = final_summary["Total_Dividends"].round(2)
+    final_summary["Total_Invested"] = final_summary["Total_Invested"].round(2)
+
+    return final_summary
 
 
-def calculate_xirr(cash_flows):
-    def npv(rate, cash_flows):
-        return sum(
+# Load the data
+df = process_data()
+
+# Calculate additional metrics
+df["Dividend_Yield"] = (df["Total_Dividends"] / df["Total_Invested"]) * 100
+top_investments = df.sort_values(by="Total_Invested", ascending=False).head(5).round(3)
+top_dividend_yield = (
+    df.sort_values(by="Dividend_Yield", ascending=False).head(5).round(3)
+)
+
+# Summary statistics
+total_investment = df["Total_Invested"].sum()
+total_dividends = df["Total_Dividends"].sum()
+average_dividend_yield = df["Dividend_Yield"].mean()
+
+# Initialize the Dash app with a Bootstrap theme
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.SLATE])
+app.title = "Comprehensive Investment Dashboard"
+
+# Define the layout of the app
+app.layout = dbc.Container(
+    [
+        dbc.Row(
             [
-                cf / ((1 + rate) ** ((d - cash_flows[0][0]).days / 365.0))
-                for d, cf in cash_flows
+                dbc.Col(
+                    html.H1(
+                        "Comprehensive Investment Dashboard",
+                        className="text-center my-4 text-light",
+                    ),
+                    width=12,
+                )
             ]
-        )
+        ),
+        # Overview Cards
+        dbc.Row(
+            [
+                dbc.Col(
+                    dbc.Card(
+                        dbc.CardBody(
+                            [
+                                html.H4(
+                                    "Total Investment",
+                                    className="card-title text-light",
+                                ),
+                                html.H3(
+                                    f"${total_investment:,.2f}",
+                                    className="card-text text-success",
+                                ),
+                            ]
+                        ),
+                        className="mb-4",
+                        color="dark",
+                        inverse=True,
+                    ),
+                    width=4,
+                ),
+                dbc.Col(
+                    dbc.Card(
+                        dbc.CardBody(
+                            [
+                                html.H4(
+                                    "Total Dividends", className="card-title text-light"
+                                ),
+                                html.H3(
+                                    f"${total_dividends:,.2f}",
+                                    className="card-text text-info",
+                                ),
+                            ]
+                        ),
+                        className="mb-4",
+                        color="dark",
+                        inverse=True,
+                    ),
+                    width=4,
+                ),
+                dbc.Col(
+                    dbc.Card(
+                        dbc.CardBody(
+                            [
+                                html.H4(
+                                    "Average Dividend Yield",
+                                    className="card-title text-light",
+                                ),
+                                html.H3(
+                                    f"{average_dividend_yield:.2f}%",
+                                    className="card-text text-warning",
+                                ),
+                            ]
+                        ),
+                        className="mb-4",
+                        color="dark",
+                        inverse=True,
+                    ),
+                    width=4,
+                ),
+            ]
+        ),
+        # Tables and Charts
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H4(
+                                        "Top Investments",
+                                        className="card-title text-center mb-4 text-light",
+                                    ),
+                                    dash_table.DataTable(
+                                        id="top-investments-table",
+                                        columns=[
+                                            {"name": col, "id": col}
+                                            for col in top_investments.columns
+                                        ],
+                                        data=top_investments.to_dict("records"),
+                                        page_size=5,
+                                        style_table={
+                                            "height": "300px",
+                                            "overflowY": "auto",
+                                            "width": "100%",
+                                            "border": "1px solid #444",
+                                            "boxShadow": "0px 4px 12px rgba(0, 0, 0, 0.3)",
+                                            "borderRadius": "10px",
+                                        },
+                                        style_header={
+                                            "backgroundColor": "#1b1b1b",
+                                            "fontWeight": "bold",
+                                            "color": "#e2e2e2",
+                                            "borderBottom": "1px solid #444",
+                                        },
+                                        style_cell={
+                                            "textAlign": "left",
+                                            "padding": "10px",
+                                            "fontSize": "14px",
+                                            "border": "1px solid #444",
+                                            "backgroundColor": "#2a2a2a",
+                                            "color": "#e2e2e2",
+                                        },
+                                    ),
+                                ]
+                            ),
+                            style={
+                                "height": "100%",
+                                "backgroundColor": "#222",
+                                "borderRadius": "12px",
+                            },
+                        )
+                    ],
+                    width=6,
+                    className="mb-4",
+                ),
+                dbc.Col(
+                    [
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H4(
+                                        "Top Dividend Yield Instruments",
+                                        className="card-title text-center mb-4 text-light",
+                                    ),
+                                    dash_table.DataTable(
+                                        id="top-dividend-yield-table",
+                                        columns=[
+                                            {"name": col, "id": col}
+                                            for col in top_dividend_yield.columns
+                                        ],
+                                        data=top_dividend_yield.to_dict("records"),
+                                        page_size=5,
+                                        style_table={
+                                            "height": "300px",
+                                            "overflowY": "auto",
+                                            "width": "100%",
+                                            "border": "1px solid #444",
+                                            "boxShadow": "0px 4px 12px rgba(0, 0, 0, 0.3)",
+                                            "borderRadius": "10px",
+                                        },
+                                        style_header={
+                                            "backgroundColor": "#1b1b1b",
+                                            "fontWeight": "bold",
+                                            "color": "#e2e2e2",
+                                            "borderBottom": "1px solid #444",
+                                        },
+                                        style_cell={
+                                            "textAlign": "left",
+                                            "padding": "10px",
+                                            "fontSize": "14px",
+                                            "border": "1px solid #444",
+                                            "backgroundColor": "#2a2a2a",
+                                            "color": "#e2e2e2",
+                                        },
+                                    ),
+                                ]
+                            ),
+                            style={
+                                "height": "100%",
+                                "backgroundColor": "#222",
+                                "borderRadius": "12px",
+                            },
+                        )
+                    ],
+                    width=6,
+                    className="mb-4",
+                ),
+            ]
+        ),
+        # Charts
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H4(
+                                        "Investment Distribution",
+                                        className="card-title text-center mb-4 text-light",
+                                    ),
+                                    dcc.Graph(
+                                        id="pie-chart",
+                                        figure=px.pie(
+                                            df,
+                                            names="Instrument",
+                                            values="Total_Invested",
+                                            title="Portfolio Distribution",
+                                            hole=0.4,
+                                            template="plotly_dark",
+                                            color_discrete_sequence=px.colors.sequential.Plasma,
+                                        ).update_layout(
+                                            showlegend=True,
+                                            title_x=0.5,
+                                            margin=dict(l=20, r=20, t=40, b=20),
+                                            transition={
+                                                "duration": 800,
+                                                "easing": "cubic-in-out",
+                                            },
+                                        ),
+                                    ),
+                                ]
+                            ),
+                            style={"backgroundColor": "#222", "borderRadius": "12px"},
+                        )
+                    ],
+                    width=6,
+                    className="mb-4",
+                ),
+                dbc.Col(
+                    [
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H4(
+                                        "Top Investments (Bar Chart)",
+                                        className="card-title text-center mb-4 text-light",
+                                    ),
+                                    dcc.Graph(
+                                        id="bar-chart",
+                                        figure=px.bar(
+                                            top_investments,
+                                            x="Instrument",
+                                            y="Total_Invested",
+                                            title="Top Investments by Total Invested Amount",
+                                            labels={
+                                                "Total_Invested": "Total Invested ($)",
+                                                "Instrument": "Stock",
+                                            },
+                                            template="plotly_dark",
+                                        ).update_layout(
+                                            margin=dict(l=20, r=20, t=40, b=20),
+                                            transition={
+                                                "duration": 800,
+                                                "easing": "cubic-in-out",
+                                            },
+                                        ),
+                                    ),
+                                ]
+                            ),
+                            style={"backgroundColor": "#222", "borderRadius": "12px"},
+                        )
+                    ],
+                    width=6,
+                    className="mb-4",
+                ),
+            ]
+        ),
+        # Final Summary Table
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H4(
+                                        "Final Investment Summary",
+                                        className="card-title text-center mb-4 text-light",
+                                    ),
+                                    dash_table.DataTable(
+                                        id="final-summary-table",
+                                        columns=[
+                                            {"name": col, "id": col}
+                                            for col in df.columns
+                                        ],
+                                        data=df.to_dict("records"),
+                                        page_size=10,
+                                        style_table={
+                                            "height": "400px",
+                                            "overflowY": "auto",
+                                            "width": "100%",
+                                            "border": "1px solid #444",
+                                            "boxShadow": "0px 4px 12px rgba(0, 0, 0, 0.3)",
+                                            "borderRadius": "10px",
+                                        },
+                                        style_header={
+                                            "backgroundColor": "#1b1b1b",
+                                            "fontWeight": "bold",
+                                            "color": "#e2e2e2",
+                                            "borderBottom": "1px solid #444",
+                                        },
+                                        style_cell={
+                                            "textAlign": "left",
+                                            "padding": "10px",
+                                            "fontSize": "14px",
+                                            "border": "1px solid #444",
+                                            "backgroundColor": "#2a2a2a",
+                                            "color": "#e2e2e2",
+                                        },
+                                    ),
+                                ]
+                            ),
+                            style={
+                                "backgroundColor": "#222",
+                                "borderRadius": "12px",
+                            },
+                        )
+                    ],
+                    width=12,
+                    className="mb-4",
+                ),
+            ]
+        ),
+    ],
+    fluid=True,
+    style={"backgroundColor": "#1a1a1a", "padding": "20px"},
+)
 
-    return newton(lambda r: npv(r, cash_flows), 0.1)
-
-
-# Set page configuration to widescreen mode
-st.set_page_config(layout="wide")
-
-timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-file_name = f"./robinhood_statement_{timestamp}.csv"
-
-# File uploader for CSV file
-uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
-if uploaded_file is not None:
-    with open(file_name, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    uploaded_file = file_name
-
-
-uploaded_file = "./robinhood_statement.csv"
-
-if uploaded_file is not None:
-    try:
-        # Load the CSV file
-        df = pd.read_csv(uploaded_file, encoding="utf-8", on_bad_lines="skip")
-
-        # Filter for "Buy" transactions
-        df_buy = df[df["Trans Code"] == "Buy"].copy()
-
-        # Convert relevant columns to numeric and date formats
-        df_buy.loc[:, "Activity Date"] = pd.to_datetime(df_buy["Activity Date"]).dt.date
-        df_buy.loc[:, "Quantity"] = pd.to_numeric(df_buy["Quantity"], errors="coerce")
-        df_buy.loc[:, "Price"] = (
-            df_buy["Price"].replace("[\\$,]", "", regex=True).astype(float)
-        )
-
-        # Sort by Activity Date
-        df_buy = df_buy.sort_values(by="Activity Date")
-
-        # Calculate cumulative quantity over time
-        df_buy["Cumulative Quantity"] = df_buy.groupby("Instrument")[
-            "Quantity"
-        ].cumsum()
-        df_buy["Weighted Average Price"] = (
-            df_buy.groupby("Instrument")
-            .apply(
-                lambda x: (x["Price"] * x["Quantity"]).cumsum()
-                / x["Cumulative Quantity"]
-            )
-            .reset_index(drop=True)
-        )
-
-        st.success("CSV file loaded successfully!")
-    except Exception as e:
-        st.error(f"Error loading CSV file: {e}")
-        df_buy = pd.DataFrame()  # Empty DataFrame if there's an error
-else:
-    st.warning("Please upload a CSV file.")
-    df_buy = pd.DataFrame()  # Empty DataFrame if no file is uploaded
-
-st.title("Robinhood Stock Analysis")
-
-def display_chart():
-    if df_buy.empty:
-        st.write("No data available. Please upload a CSV file.")
-        return
-
-    # Dropdown to select the stock
-    stock_list = df_buy["Instrument"].unique()
-    default_stock = "VOO" if "VOO" in stock_list else stock_list[0]
-    selected_stock = st.selectbox(
-        "Select a Stock to Analyze",
-        stock_list,
-        index=stock_list.tolist().index(default_stock),
-    )
-
-    # Get stock data
-    stock_info = get_stock_info(selected_stock)
-
-    # Fetch historical data
-    hist_data = fetch_stock_data(selected_stock, period="1mo")
-
-    # Calculate trend
-    current_price = hist_data["Close"][-1]
-    past_prices = hist_data["Close"].iloc[:-1]  # Exclude the current price
-    trend = "Increasing" if current_price > past_prices.mean() else "Decreasing"
-    trend_color = "green" if trend == "Increasing" else "red"
-
-    # Filter data for the selected stock
-    stock_data = df_buy[df_buy["Instrument"] == selected_stock]
-    stock_data["Invested_Amount"] = (
-        df_buy["Amount"].replace("[\\$,()]", "", regex=True).astype(float).round(2)
-    )
-
-    if not stock_data.empty:
-        # Create a subplot with two y-axes
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-        # Add trace for cumulative quantity
-        fig.add_trace(
-            go.Scatter(
-                x=stock_data["Activity Date"],
-                y=stock_data["Cumulative Quantity"],
-                mode="lines+markers",
-                name="Cumulative Quantity",
-                marker=dict(color="blue"),
-                text=[
-                    f"Date: {date}<br>Quantity: {qty}"
-                    for date, qty in zip(
-                        stock_data["Activity Date"], stock_data["Quantity"]
-                    )
-                ],
-                hoverinfo="text",
-            ),
-            secondary_y=False,
-        )
-
-        # Add trace for price
-        fig.add_trace(
-            go.Scatter(
-                x=stock_data["Activity Date"],
-                y=stock_data["Price"],
-                mode="lines+markers",
-                name="Price",
-                marker=dict(color="red"),
-                text=[
-                    f"Date: {date}<br>Price: ${price:.2f}"
-                    for date, price in zip(
-                        stock_data["Activity Date"], stock_data["Price"]
-                    )
-                ],
-                hoverinfo="text",
-            ),
-            secondary_y=True,
-        )
-
-        # Update layout with titles and axis labels
-        fig.update_layout(
-            title_text=f"Cumulative Shares and Price for {selected_stock}",
-            hovermode="x unified",
-        )
-
-        # Format x-axis to show only date
-        fig.update_xaxes(
-            title_text="Date", tickformat="%Y-%m-%d"  # Ensure only the date is shown
-        )
-
-        fig.update_yaxes(title_text="Cumulative Quantity", secondary_y=False)
-        fig.update_yaxes(title_text="Price", secondary_y=True)
-
-        # Render the plot in Streamlit
-        st.plotly_chart(fig)
-
-        # # Show the raw data in a table
-        # st.subheader(f"Raw Data for {selected_stock}")
-        # st.write(
-        #     stock_data[
-        #         ["Activity Date", "Quantity", "Invested_Amount", "Price", "Description"]
-        #     ].reset_index(drop=True)
-        # )
-
-        # Display stock info
-        st.subheader(f"Stock Info: {stock_info.get('longName', 'N/A')}")
-
-        # Display trend
-        st.markdown(
-            f"<h2 style='color: {trend_color};'>Trend for {stock_info.get('longName')} is : {trend}</h2>",
-            unsafe_allow_html=True,
-        )
-
-        # Calculate total returns using XIRR
-        cash_flows = list(
-            zip(stock_data["Activity Date"], -stock_data["Invested_Amount"])
-        )
-        cash_flows.append(
-            (
-                datetime.now().date(),
-                current_price * stock_data["Cumulative Quantity"].iloc[-1],
-            )
-        )
-        xirr = calculate_xirr(cash_flows)
-        total_returns = cash_flows[-1][1] + sum(cf[1] for cf in cash_flows[:-1])
-        
-        mcol1, mcol2 = st.columns(2)
-
-        # Display XIRR and total returns
-        with mcol1:
-            st.metric(label="XIRR (Annualized Return)", value=f"{xirr * 100:.2f}%")
-        
-        with mcol2:
-            st.metric(label="Total Return", value=f"${total_returns:.2f}")
-
-        # Create columns
-        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-
-        # Display stock info in columns
-        with col1:
-            st.metric(label="Current Price", value=f"${current_price:.2f}")
-
-        with col2:
-            st.metric(
-                label="Day High", value=f"${stock_info.get('dayHigh', 'N/A'):.2f}"
-            )
-
-        with col3:
-            st.metric(label="Day Low", value=f"${stock_info.get('dayLow', 'N/A'):.2f}")
-
-        with col4:
-            st.metric(
-                label="Regular Market Open",
-                value=f"${stock_info.get('regularMarketOpen', 'N/A'):.2f}",
-            )
-
-        with col5:
-            st.metric(
-                label="52-Week High",
-                value=f"${stock_info.get('fiftyTwoWeekHigh', 'N/A'):.2f}",
-            )
-
-        with col6:
-            st.metric(
-                label="52-Week Low",
-                value=f"${stock_info.get('fiftyTwoWeekLow', 'N/A'):.2f}",
-            )
-
-        with col7:
-            st.metric(label="PE", value=f"{stock_info.get('trailingPE', 'N/A'):.2f}")
-
-        # Drop down to select the period
-        period = st.selectbox(
-            "Select the period",
-            ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
-            index=0,
-        )
-
-        # Fetch historical data
-        hist_data = fetch_stock_data(selected_stock, period=period)
-
-        # Plot historical data
-        fig = go.Figure()
-
-        fig.add_trace(
-            go.Scatter(
-                x=hist_data.index,
-                y=hist_data["Close"],
-                mode="lines+markers",
-                name="Closing Price",
-                marker=dict(color="blue"),
-            )
-        )
-
-        fig.update_layout(
-            title_text=f"Price Trend for {selected_stock}",
-            xaxis_title="Date",
-            yaxis_title="Price",
-            hovermode="x unified",
-        )
-
-        # Format x-axis to show only date
-        fig.update_xaxes(title_text="Date", tickformat="%Y-%m-%d")
-
-        st.plotly_chart(fig)
-
-    else:
-        st.write("No data available for the selected stock.")
-
-
-def display_pie_chart():
-
-    # Calculate the total investment per stock
-    df_buy["Invested_Amount"] = (
-        df_buy["Amount"].replace("[\\$,()]", "", regex=True).astype(float).round(2)
-    )
-    investment_summary = df_buy.groupby("Instrument")["Invested_Amount"].sum()
-
-    # Calculate the percentage of total investment
-    total_investment = investment_summary.sum()
-    investment_summary_percentage = (investment_summary / total_investment) * 100
-
-    # Create a pie chart
-    fig = go.Figure(
-        data=[
-            go.Pie(
-                labels=investment_summary_percentage.index,
-                values=investment_summary_percentage.round(2),
-                hoverinfo="label+percent",
-                textinfo="label+value",
-                marker=dict(colors=px.colors.qualitative.Plotly),
-            )
-        ]
-    )
-
-    # Update the layout
-    fig.update_layout(
-        title_text="Investment Distribution by Stock",
-    )
-
-    # Display the total investment outside of the pie chart
-    st.markdown(f"Total Investment: ${total_investment:.2f}")
-
-    # Render the pie chart in Streamlit
-    st.plotly_chart(fig)
-
-
-# Display the pie chart
-display_pie_chart()
-
-
-# Display the chart
-display_chart()
+# Run the app
+if __name__ == "__main__":
+    app.run_server(debug=True)
