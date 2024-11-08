@@ -1,23 +1,21 @@
-# Use an official Python runtime based on Alpine
-FROM python:3.11-alpine
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
 
 # Set environment variables to avoid .pyc files and enable unbuffered output
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
-# Set the working directory
+# Set the working directory in the container
 WORKDIR /app
 
-# Install dependencies for packages that may need compilation
-RUN apk add --no-cache gcc musl-dev libffi-dev
+# Copy the current directory contents into the container at /app
+COPY . /app
 
-# Copy the rest of the application code
-COPY . .
-
-# Install Python dependencies in a single layer
+# Install any needed packages specified in requirements.txt
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose the Streamlit port
+# Make port 8501 available to the world outside this container
 EXPOSE 8501
 
-# Run Streamlit with the interactive analysis script
+# Run Streamlit when the container launches
 CMD ["streamlit", "run", "interactive_stock_analysis.py"]
