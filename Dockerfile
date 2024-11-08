@@ -1,30 +1,23 @@
-# Use the official Python runtime as a parent image
-FROM python:3.11-slim AS base
+# Use an official Python runtime based on Alpine
+FROM python:3.11-alpine
 
-# Install only necessary system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential && \
-    rm -rf /var/lib/apt/lists/*
-
-# Set environment variables to prevent .pyc files and to disable buffering
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+# Set environment variables to avoid .pyc files and enable unbuffered output
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
 # Set the working directory
 WORKDIR /app
 
-# Copy only the requirements file first to leverage Docker cache
-COPY requirements.txt .
-
-# Install dependencies in a virtual environment
-RUN python -m venv /app/venv && \
-    /app/venv/bin/pip install --no-cache-dir -r requirements.txt
+# Install dependencies for packages that may need compilation
+RUN apk add --no-cache gcc musl-dev libffi-dev
 
 # Copy the rest of the application code
 COPY . .
 
-# Make port 8501 available to the world outside this container
+# Install Python dependencies in a single layer
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Expose the Streamlit port
 EXPOSE 8501
 
-# Run Streamlit with the virtual environment
-CMD ["/app/venv/bin/streamlit", "run", "interactive_stock_analysis.py"]
+# Run Streamlit with the interactive analysis script
+CMD ["streamlit", "run", "interactive_stock_analysis.py"]
